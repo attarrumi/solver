@@ -1,0 +1,7 @@
+.{
+    .name = .solver,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.15.1",
+    .paths = .{""},
+    .fingerprint = 0xa01bedfb3ce32b2f,
+}
