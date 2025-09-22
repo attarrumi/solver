@@ -6,17 +6,17 @@ pub const ModelInterface = struct {
     const Self = @This();
 
     // Function pointers untuk interface
-    dynamics_fn: *const fn (model: *const anyopaque, state: []const f64, control: []const f64, result: []f64) void,
-    stage_cost_fn: *const fn (model: *const anyopaque, state: []const f64, control: []const f64) f64,
+    dynamics_fn: *const fn (model: *const anyopaque, state: []const f32, control: []const f32, result: []f32) void,
+    stage_cost_fn: *const fn (model: *const anyopaque, state: []const f32, control: []const f32) f32,
 
     // Pointer ke model instance
     model_ptr: *const anyopaque,
 
-    pub fn dynamics(self: Self, state: []const f64, control: []const f64, result: []f64) void {
+    pub fn dynamics(self: Self, state: []const f32, control: []const f32, result: []f32) void {
         self.dynamics_fn(self.model_ptr, state, control, result);
     }
 
-    pub fn stage_cost(self: Self, state: []const f64, control: []const f64) f64 {
+    pub fn stage_cost(self: Self, state: []const f32, control: []const f32) f32 {
         return self.stage_cost_fn(self.model_ptr, state, control);
     }
 };
@@ -28,10 +28,10 @@ pub const Method = enum {
 
 /// Hasil utama dari optimize()
 pub const OptimizeResult = struct {
-    U_opt: []f64,
+    U_opt: []f32,
     method_trace: []Method,
     iterations: usize,
-    final_cost: f64,
+    final_cost: f32,
     converged: bool,
 
     pub fn deinit(self: *OptimizeResult, allocator: std.mem.Allocator) void {
@@ -50,15 +50,15 @@ pub const NMPC_Solver = struct {
 
     allocator: std.mem.Allocator,
 
-    last_U_opt: ?[]f64 = null,
+    last_U_opt: ?[]f32 = null,
     // Parameter solver
     params: struct {
-        U_min: f64 = -12.0,
-        U_max: f64 = 12.0,
-        lr: f64 = 0.01,
+        U_min: f32 = -12.0,
+        U_max: f32 = 12.0,
+        lr: f32 = 0.01,
         fgm_steps: usize = 35,
         bfgs_steps: usize = 25,
-        tol: f64 = 1e-4,
+        tol: f32 = 1e-4,
         max_line_search: usize = 50,
         bfgs_memory: usize = 10,
     } = .{},
@@ -90,7 +90,7 @@ pub const NMPC_Solver = struct {
 
     // ---------------- METODE SOLVER ----------------
 
-    fn rollout(self: Self, x0: []const f64, U: []const f64, X: [][]f64) void {
+    fn rollout(self: Self, x0: []const f32, U: []const f32, X: [][]f32) void {
         @memcpy(X[0], x0);
         var k: usize = 0;
         while (k < self.N) : (k += 1) {
@@ -99,9 +99,9 @@ pub const NMPC_Solver = struct {
         }
     }
 
-    fn objectiveNMPC(self: Self, U: []const f64, x0: []const f64, workspace: [][]f64) f64 {
+    fn objectiveNMPC(self: Self, U: []const f32, x0: []const f32, workspace: [][]f32) f32 {
         self.rollout(x0, U, workspace);
-        var cost: f64 = 0.0;
+        var cost: f32 = 0.0;
         var k: usize = 0;
         while (k < self.N) : (k += 1) {
             const u_slice = U[k * self.nu .. (k + 1) * self.nu];
@@ -109,9 +109,9 @@ pub const NMPC_Solver = struct {
 
             for (u_slice) |u_val| {
                 if (u_val < self.params.U_min) {
-                    cost += 100 * math.pow(f64, self.params.U_min - u_val, 2);
+                    cost += 100 * math.pow(f32, self.params.U_min - u_val, 2);
                 } else if (u_val > self.params.U_max) {
-                    cost += 100 * math.pow(f64, u_val - self.params.U_max, 2);
+                    cost += 100 * math.pow(f32, u_val - self.params.U_max, 2);
                 }
             }
         }
@@ -119,10 +119,10 @@ pub const NMPC_Solver = struct {
     }
 
     // IMPROVEMENT: Function signature changed to return an error to handle allocation failures.
-    fn gradient(self: Self, U: []const f64, x0: []const f64, grad: []f64, workspace: [][]f64) !void {
-        const eps: f64 = 1e-6;
+    fn gradient(self: Self, U: []const f32, x0: []const f32, grad: []f32, workspace: [][]f32) !void {
+        const eps: f32 = 1e-6;
 
-        const U_perturbed = try self.allocator.alloc(f64, U.len);
+        const U_perturbed = try self.allocator.alloc(f32, U.len);
         defer self.allocator.free(U_perturbed);
 
         @memcpy(U_perturbed, U);
@@ -145,40 +145,40 @@ pub const NMPC_Solver = struct {
     // FIX: Entire lbfgsOptimize function is heavily refactored for correctness and efficiency.
     fn lbfgsOptimize(
         self: *Self,
-        x0: []const f64,
-        U: []f64, // Takes ownership and modifies in place
+        x0: []const f32,
+        U: []f32, // Takes ownership and modifies in place
         trace: *std.ArrayList(Method),
-        workspace: [][]f64,
+        workspace: [][]f32,
         iter_count: *usize,
     ) !void {
         const n = U.len;
 
         // --- IMPROVEMENT: Allocate L-BFGS history buffers once ---
-        var s_list = try self.allocator.alloc([]f64, self.params.bfgs_memory);
+        var s_list = try self.allocator.alloc([]f32, self.params.bfgs_memory);
         defer self.allocator.free(s_list);
-        for (0..self.params.bfgs_memory) |i| s_list[i] = try self.allocator.alloc(f64, n);
+        for (0..self.params.bfgs_memory) |i| s_list[i] = try self.allocator.alloc(f32, n);
         defer for (s_list) |s| self.allocator.free(s);
 
-        var y_list = try self.allocator.alloc([]f64, self.params.bfgs_memory);
+        var y_list = try self.allocator.alloc([]f32, self.params.bfgs_memory);
         defer self.allocator.free(y_list);
-        for (0..self.params.bfgs_memory) |i| y_list[i] = try self.allocator.alloc(f64, n);
+        for (0..self.params.bfgs_memory) |i| y_list[i] = try self.allocator.alloc(f32, n);
         defer for (y_list) |y| self.allocator.free(y);
 
-        var rho_list = try self.allocator.alloc(f64, self.params.bfgs_memory);
+        var rho_list = try self.allocator.alloc(f32, self.params.bfgs_memory);
         defer self.allocator.free(rho_list);
 
         // --- IMPROVEMENT: Allocate workspace vectors once before the loop ---
-        const g = try self.allocator.alloc(f64, n);
+        const g = try self.allocator.alloc(f32, n);
         defer self.allocator.free(g);
-        const g_old = try self.allocator.alloc(f64, n);
+        const g_old = try self.allocator.alloc(f32, n);
         defer self.allocator.free(g_old);
-        const U_old = try self.allocator.alloc(f64, n);
+        const U_old = try self.allocator.alloc(f32, n);
         defer self.allocator.free(U_old);
-        const q = try self.allocator.alloc(f64, n);
+        const q = try self.allocator.alloc(f32, n);
         defer self.allocator.free(q);
-        const p = try self.allocator.alloc(f64, n);
+        const p = try self.allocator.alloc(f32, n);
         defer self.allocator.free(p);
-        var alpha_hist = try self.allocator.alloc(f64, self.params.bfgs_memory);
+        var alpha_hist = try self.allocator.alloc(f32, self.params.bfgs_memory);
         defer self.allocator.free(alpha_hist);
 
         try self.gradient(U, x0, g, workspace);
@@ -224,11 +224,11 @@ pub const NMPC_Solver = struct {
 
             // --- Backtracking Line Search ---
             const current_cost = self.objectiveNMPC(U, x0, workspace);
-            var step_size: f64 = 1.0;
-            const c1: f64 = 1e-4;
+            var step_size: f32 = 1.0;
+            const c1: f32 = 1e-4;
             const m = linalg.dot(g, p); // Directional derivative
 
-            const U_trial = try self.allocator.alloc(f64, n); // Temporary for line search
+            const U_trial = try self.allocator.alloc(f32, n); // Temporary for line search
             defer self.allocator.free(U_trial);
 
             var ls_success = false;
@@ -283,7 +283,7 @@ pub const NMPC_Solver = struct {
         }
     }
 
-    fn adaptive_parameters(self: *Self, x: []const f64) void {
+    fn adaptive_parameters(self: *Self, x: []const f32) void {
         const pos_error = @abs(x[0]);
         const angle_error = if (self.nx > 2) @abs(x[2]) else 0.0;
 
@@ -317,17 +317,17 @@ pub const NMPC_Solver = struct {
 
     pub fn optimize(
         self: *Self,
-        x0: []const f64,
+        x0: []const f32,
     ) !OptimizeResult {
         // self.adaptive_parameters(x0);
 
-        const workspace = try self.allocator.alloc([]f64, self.N + 1);
+        const workspace = try self.allocator.alloc([]f32, self.N + 1);
         defer self.allocator.free(workspace);
-        for (workspace) |*state| state.* = try self.allocator.alloc(f64, self.nx);
+        for (workspace) |*state| state.* = try self.allocator.alloc(f32, self.nx);
         defer for (workspace) |state| self.allocator.free(state);
 
         const U = if (self.last_U_opt) |last_U| blk: {
-            const shifted_U = try self.allocator.alloc(f64, self.N * self.nu);
+            const shifted_U = try self.allocator.alloc(f32, self.N * self.nu);
             const nu = self.nu;
             const N = self.N;
             // Shift previous solution
@@ -336,7 +336,7 @@ pub const NMPC_Solver = struct {
             @memcpy(shifted_U[(N - 1) * nu .. N * nu], shifted_U[(N - 2) * nu .. (N - 1) * nu]);
             break :blk shifted_U;
         } else blk: {
-            break :blk try self.allocator.alloc(f64, self.N * self.nu);
+            break :blk try self.allocator.alloc(f32, self.N * self.nu);
         };
         // U will be owned by OptimizeResult, so we only free it on error paths
         var err_free_U = true;
@@ -347,9 +347,9 @@ pub const NMPC_Solver = struct {
 
         var total_iterations: usize = 0;
         var converged = false;
-        var final_cost: f64 = 0.0;
+        var final_cost: f32 = 0.0;
 
-        const g = try self.allocator.alloc(f64, U.len);
+        const g = try self.allocator.alloc(f32, U.len);
         defer self.allocator.free(g);
 
         // ---------- FGM ----------
@@ -382,7 +382,7 @@ pub const NMPC_Solver = struct {
 
         // Update last optimal solution
         if (self.last_U_opt) |old_u| self.allocator.free(old_u);
-        self.last_U_opt = try self.allocator.dupe(f64, U);
+        self.last_U_opt = try self.allocator.dupe(f32, U);
 
         // Success, so transfer ownership of U to OptimizeResult
         err_free_U = false;
